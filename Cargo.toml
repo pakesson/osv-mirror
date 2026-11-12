@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 
 [workspace]
-members = ["crates/osv-schema"]
+members = ["crates/osv-api", "crates/osv-schema"]
 resolver = "3"
