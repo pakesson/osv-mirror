@@ -66,6 +66,61 @@ Commit queries return HTTP 503 for missing or stale coverage. A commit query wit
 | `serve` | `--db` SQLite mirror. `--bind` listen address (default `127.0.0.1:8080`). |
 | `index-git` | `--db` SQLite mirror. `--repository` advisory repository URL. `--mirror` path to a full local Git mirror. |
 
+## Use the Rust crates in another project
+
+### Query OSV.dev with `osv-api`
+
+With a checkout of `osv-mirror` beside your project, add these dependencies to your `Cargo.toml`.
+
+```toml
+[dependencies]
+osv-api = { path = "../osv-mirror/crates/osv-api" }
+tokio = { version = "1", features = ["macros", "rt"] }
+```
+
+Look up an advisory by ID and query all pages of results for a versioned PURL.
+
+```rust
+use osv_api::{Client, Query};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::new()?;
+    let advisory = client.get_vulnerability("GHSA-jfh8-c2jp-5v3q").await?;
+    println!("{}", advisory.id);
+
+    let query = Query::for_purl("pkg:pypi/jinja2@3.1.4");
+    for advisory in client.query_all(&query).await? {
+        println!("{}", advisory.id);
+    }
+    Ok(())
+}
+```
+
+Use `client.query_batch_all(&[query_a, query_b]).await?` for multiple packages. Results contain advisory IDs and modification timestamps in input order. Set `Client::builder().base_url("http://127.0.0.1:8080").build()?` to query a running local mirror.
+
+### Validate an advisory with `osv-schema`
+
+Use `osv-schema` directly to validate and parse OSV JSON offline.
+
+```toml
+[dependencies]
+osv-schema = { path = "../osv-mirror/crates/osv-schema" }
+serde_json = "1"
+```
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string("advisory.json")?;
+    let document = serde_json::from_str(&json)?;
+    osv_schema::validate_json(&document)?;
+
+    let advisory = osv_schema::from_json(&json)?;
+    println!("{}", advisory.id);
+    Ok(())
+}
+```
+
 ## License
 
 This project is licensed under the terms in the repository LICENSE file.
