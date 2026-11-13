@@ -9,7 +9,7 @@ mod validation;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-pub use validation::{ValidationError, from_json, validate_json};
+pub use validation::{ValidationError, from_json, is_indexable_id, timestamp_key, validate_json};
 
 /// The upstream OSV specification implemented by this crate.
 pub const SCHEMA_VERSION: &str = "1.9.2";
@@ -40,6 +40,17 @@ impl<T> Nullable<T> {
             Self::Value(value) => Some(value),
         }
     }
+}
+
+/// The fields needed to store an advisory by ID without indexing its ranges.
+#[derive(Debug, Deserialize)]
+pub struct IndexMetadata {
+    pub id: String,
+    pub modified: String,
+    pub withdrawn: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    pub schema_version: Option<String>,
+    pub aliases: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

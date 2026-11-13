@@ -4,7 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+clap = { version = "4", features = ["derive"] }
+osv-server = { path = "crates/osv-server" }
+osv-store = { path = "crates/osv-store" }
+osv-sync = { path = "crates/osv-sync" }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+osv-api = { path = "crates/osv-api" }
+rawzip = "0.5"
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+tempfile = "3"
 
 [workspace]
-members = ["crates/osv-api", "crates/osv-schema"]
+members = [
+    "crates/osv-api",
+    "crates/osv-schema",
+    "crates/osv-server",
+    "crates/osv-store",
+    "crates/osv-sync",
+]
 resolver = "3"

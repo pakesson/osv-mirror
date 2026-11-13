@@ -1,0 +1,11 @@
+[package]
+name = "osv-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+osv-api = { path = "../osv-api", default-features = false }
+osv-store = { path = "../osv-store" }
+tokio = { version = "1", features = ["rt", "sync"] }
+tracing = "0.1"

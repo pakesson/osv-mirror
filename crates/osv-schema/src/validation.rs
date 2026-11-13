@@ -3,10 +3,11 @@ use std::sync::LazyLock;
 use chrono::DateTime;
 use packageurl::PackageUrl;
 use semver::Version;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{Range, Vulnerability};
+use crate::{DEFAULT_SCHEMA_VERSION, IndexMetadata, Range, Vulnerability};
 
 // Unmodified OSV Schema 1.9.2 from references/osv-schema/validation/schema.json.
 static JSON_SCHEMA: LazyLock<jsonschema::Validator> = LazyLock::new(|| {
@@ -46,6 +47,10 @@ impl ValidationError {
 ///
 /// Call [`Vulnerability::validate_for_ingestion`] before indexing the result.
 pub fn from_json(json: &str) -> Result<Vulnerability, ValidationError> {
+    decode_json(json)
+}
+
+fn decode_json<T: DeserializeOwned>(json: &str) -> Result<T, ValidationError> {
     let mut deserializer = serde_json::Deserializer::from_str(json);
     let record = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
         ValidationError::at(error.path().to_string(), error.inner().to_string())
@@ -54,6 +59,36 @@ pub fn from_json(json: &str) -> Result<Vulnerability, ValidationError> {
         .end()
         .map_err(|error| ValidationError::at("$", error.to_string()))?;
     Ok(record)
+}
+
+impl IndexMetadata {
+    /// Decode and validate only the fields needed to index the original JSON by
+    /// ID and alias. Exported records can have nonconforming optional fields.
+    pub fn from_json(json: &str) -> Result<Self, ValidationError> {
+        let metadata: Self = decode_json(json)?;
+        if !is_indexable_id(&metadata.id) {
+            return Err(ValidationError::at("/id", "expected a safe non-empty ID"));
+        }
+        validate_index_metadata(
+            metadata
+                .schema_version
+                .as_deref()
+                .unwrap_or(DEFAULT_SCHEMA_VERSION),
+            &metadata.modified,
+            metadata.withdrawn.as_deref(),
+        )?;
+        Ok(metadata)
+    }
+}
+
+/// Whether an exported ID fits in a single filename or HTTP path segment.
+/// This also permits legacy exported IDs that contain spaces.
+pub fn is_indexable_id(id: &str) -> bool {
+    !id.trim().is_empty()
+        && !matches!(id, "." | "..")
+        && !id
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
 }
 
 /// Validate original JSON against the bundled OSV JSON Schema and additional
@@ -97,34 +132,7 @@ impl Vulnerability {
     /// Unknown ecosystem and range kinds are retained. An indexer must treat
     /// unsupported kinds as unevaluable when they could affect a query.
     pub fn validate_for_ingestion(&self) -> Result<(), ValidationError> {
-        if self.id.is_empty()
-            || !self
-                .id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b":_.-".contains(&byte))
-        {
-            return Err(ValidationError::at(
-                "/id",
-                "expected a non-empty ID using ASCII letters, digits, ':', '_', '.' or '-'",
-            ));
-        }
-
-        let version = Version::parse(self.effective_schema_version())
-            .map_err(|error| ValidationError::at("/schema_version", error.to_string()))?;
-        if version.major != 1 {
-            return Err(ValidationError::at(
-                "/schema_version",
-                format!("unsupported OSV schema version {version}; expected 1.x"),
-            ));
-        }
-
-        validate_timestamp("/modified", &self.modified)?;
-        if let Some(published) = &self.published {
-            validate_timestamp("/published", published)?;
-        }
-        if let Some(withdrawn) = &self.withdrawn {
-            validate_timestamp("/withdrawn", withdrawn)?;
-        }
+        self.validate_metadata()?;
 
         for (affected_index, affected) in self.affected_entries().iter().enumerate() {
             if let Some(package) = &affected.package {
@@ -151,6 +159,69 @@ impl Vulnerability {
 
         Ok(())
     }
+
+    fn validate_metadata(&self) -> Result<(), ValidationError> {
+        if self.id.is_empty()
+            || !self
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b":_.-".contains(&byte))
+        {
+            return Err(ValidationError::at(
+                "/id",
+                "expected a non-empty ID using ASCII letters, digits, ':', '_', '.' or '-'",
+            ));
+        }
+        validate_index_metadata(
+            self.effective_schema_version(),
+            &self.modified,
+            self.withdrawn.as_deref(),
+        )?;
+        if let Some(published) = &self.published {
+            validate_timestamp("/published", published)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_index_metadata(
+    version: &str,
+    modified: &str,
+    withdrawn: Option<&str>,
+) -> Result<(), ValidationError> {
+    let version = Version::parse(version)
+        .map_err(|error| ValidationError::at("/schema_version", error.to_string()))?;
+    if version.major != 1 {
+        return Err(ValidationError::at(
+            "/schema_version",
+            format!("unsupported OSV schema version {version}; expected 1.x"),
+        ));
+    }
+
+    validate_timestamp("/modified", modified)?;
+    if let Some(withdrawn) = withdrawn {
+        validate_timestamp("/withdrawn", withdrawn)?;
+    }
+    Ok(())
+}
+
+/// Validate a UTC OSV timestamp and return a lexically sortable key.
+pub fn timestamp_key(timestamp: &str) -> Result<String, ValidationError> {
+    validate_timestamp("/modified", timestamp)?;
+    Ok(timestamp_key_unchecked(timestamp))
+}
+
+pub(crate) fn timestamp_key_unchecked(timestamp: &str) -> String {
+    let timestamp = timestamp.trim_end_matches('Z');
+    if let Some((seconds, fraction)) = timestamp.split_once('.') {
+        let fraction = fraction.trim_end_matches('0');
+        if !fraction.is_empty() {
+            return format!("{seconds}.{fraction}");
+        }
+        return seconds.to_owned();
+    }
+    timestamp.to_owned()
 }
 
 fn validate_timestamp(path: &str, timestamp: &str) -> Result<(), ValidationError> {

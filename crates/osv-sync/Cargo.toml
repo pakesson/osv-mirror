@@ -1,0 +1,20 @@
+[package]
+name = "osv-sync"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.23"
+crc32fast = "1"
+csv = "1"
+futures-util = "0.3"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+md-5 = "0.10"
+osv-schema = { path = "../osv-schema" }
+osv-store = { path = "../osv-store" }
+rawzip = "0.5"
+reqwest = { version = "0.13", default-features = false, features = ["http2", "rustls", "system-proxy"] }
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "rt", "time"] }
