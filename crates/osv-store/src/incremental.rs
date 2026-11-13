@@ -48,12 +48,17 @@ pub struct SyncReport {
 }
 
 pub(crate) fn migrate(connection: &Connection, version: i32) -> Result<(), Error> {
-    if version == 1 {
-        let transaction = connection.unchecked_transaction()?;
-        transaction.execute_batch(include_str!("../migrations/002_sync.sql"))?;
-        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-        transaction.commit()?;
+    if version == SCHEMA_VERSION {
+        return Ok(());
     }
+    let transaction = connection.unchecked_transaction()?;
+    if version == 1 {
+        transaction.execute_batch(include_str!("../migrations/002_sync.sql"))?;
+    }
+    transaction.execute_batch(include_str!("../migrations/003_packages.sql"))?;
+    crate::packages::backfill(&transaction)?;
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    transaction.commit()?;
     Ok(())
 }
 
@@ -390,6 +395,7 @@ fn apply_bodies(connection: &Connection) -> Result<usize, Error> {
                 .prepare_cached("DELETE FROM aliases WHERE advisory_id = ?1")?
                 .execute([&id])?;
             insert_aliases(connection, &advisory)?;
+            crate::packages::replace_index(connection, &advisory)?;
             updated += changed;
         }
     }
@@ -405,7 +411,7 @@ mod tests {
     fn migrates_existing_snapshot_and_rolls_back_a_partial_apply() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("mirror.sqlite");
-        let original = r#"{"id":"OSV-1","modified":"2026-01-01T00:00:00Z"}"#;
+        let original = r#"{"id":"OSV-1","modified":"2026-01-01T00:00:00Z","affected":[{"package":{"name":"foo","ecosystem":"Go"}}]}"#;
         let mut snapshot = SnapshotWriter::new(&path).unwrap();
         snapshot
             .insert(&Advisory::parse(original).unwrap())
@@ -414,7 +420,7 @@ mod tests {
 
         let old = Connection::open(&path).unwrap();
         old.execute_batch(
-            "DROP TABLE pending_absences; DROP TABLE sync_state; PRAGMA user_version = 1;",
+            "DROP TABLE affected_packages; DROP TABLE query_snapshot; DROP TABLE pending_absences; DROP TABLE sync_state; PRAGMA user_version = 1;",
         )
         .unwrap();
         drop(old);
@@ -442,5 +448,19 @@ mod tests {
         let writer = SyncWriter::open(&path, feed).unwrap();
         assert_eq!(writer.state().revision, 0);
         assert!(writer.state().inventory_digest.is_none());
+        reader
+            .with_package_search(|search| -> Result<(), Error> {
+                let page = search.page(
+                    &crate::PackageQuery::new("foo", "Go", ""),
+                    "",
+                    10,
+                    100,
+                    None,
+                )?;
+                assert_eq!(page.matches.len(), 1);
+                assert_eq!(page.matches[0].id, "OSV-1");
+                Ok(())
+            })
+            .unwrap();
     }
 }

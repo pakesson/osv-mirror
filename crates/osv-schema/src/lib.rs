@@ -9,7 +9,9 @@ mod validation;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-pub use validation::{ValidationError, from_json, is_indexable_id, timestamp_key, validate_json};
+pub use validation::{
+    ValidationError, from_json, is_indexable_id, is_known_ecosystem, timestamp_key, validate_json,
+};
 
 /// The upstream OSV specification implemented by this crate.
 pub const SCHEMA_VERSION: &str = "1.9.2";

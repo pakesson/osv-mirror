@@ -37,7 +37,7 @@ enum Command {
         #[arg(long, default_value = EXPORT_BASE_URL)]
         base_url: String,
     },
-    /// Serve advisory lookups from a local SQLite database.
+    /// Serve advisory lookups and package queries from a local SQLite database.
     Serve {
         #[arg(long)]
         db: PathBuf,
@@ -82,12 +82,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tracing_subscriber::fmt()
                 .with_writer(std::io::stderr)
                 .init();
-            let store = tokio::task::spawn_blocking(move || Store::open(&db)).await??;
+            let store = tokio::task::spawn_blocking(move || {
+                let store = Store::open(&db)?;
+                store.prepare_queries()?;
+                Ok::<_, osv_store::Error>(store)
+            })
+            .await??;
             let listener = TcpListener::bind(bind).await?;
-            println!(
-                "Serving OSV ID lookups at http://{}",
-                listener.local_addr()?
-            );
+            println!("Serving OSV queries at http://{}", listener.local_addr()?);
             axum::serve(listener, osv_server::router(store))
                 .with_graceful_shutdown(async {
                     if let Err(error) = tokio::signal::ctrl_c().await {

@@ -333,3 +333,19 @@ impl Range {
         }
     }
 }
+
+/// Whether the base name is listed in the pinned OSV schema.
+pub fn is_known_ecosystem(ecosystem: &str) -> bool {
+    static ECOSYSTEMS: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
+        let schema: Value = serde_json::from_str(include_str!("../spec/schema.json")).unwrap();
+        let pattern = schema["$defs"]["ecosystemWithSuffix"]["pattern"]
+            .as_str()
+            .unwrap();
+        let (names, _) = pattern.strip_prefix("^(").unwrap().split_once(')').unwrap();
+        names
+            .split('|')
+            .map(|name| name.replace(r"\.", "."))
+            .collect()
+    });
+    ECOSYSTEMS.contains(ecosystem)
+}

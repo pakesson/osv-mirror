@@ -9,3 +9,8 @@ osv-api = { path = "../osv-api", default-features = false }
 osv-store = { path = "../osv-store" }
 tokio = { version = "1", features = ["rt", "sync"] }
 tracing = "0.1"
+base64 = "0.23"
+packageurl = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"

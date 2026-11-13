@@ -1,7 +1,9 @@
 //! SQLite storage and snapshot publication for OSV advisories.
 
 mod incremental;
+mod packages;
 mod snapshot;
+mod versions;
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io;
@@ -12,11 +14,14 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use thiserror::Error;
 
 pub use incremental::{Candidate, FeedState, Reconciliation, SyncReport, SyncWriter, Validators};
+pub use packages::{
+    PackageMatch, PackagePage, PackageQuery, PackageSearch, base_ecosystem, known_ecosystem,
+};
 pub use snapshot::SnapshotWriter;
 
 // ASCII "OSV" followed by a zero byte.
 const APPLICATION_ID: i32 = 0x4f535600;
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -52,6 +57,12 @@ pub enum Error {
     TooManyPaths(String),
     #[error("cannot apply an empty inventory")]
     EmptyInventory,
+    #[error("package matching cannot evaluate {id} in ecosystem {ecosystem}")]
+    UnsupportedMatch { id: String, ecosystem: String },
+    #[error("page token belongs to a different database revision")]
+    StalePage,
+    #[error("an advisory exceeds the query response size limit")]
+    ResponseTooLarge,
 }
 
 /// An advisory validated for storage, retaining its original JSON.
@@ -108,6 +119,18 @@ impl Store {
         let connection = open_read(&path)?;
         check_schema(&connection, &path)?;
         Ok(Self { path, _lock: lock })
+    }
+
+    /// Upgrade existing mirrors before serving package queries.
+    pub fn prepare_queries(&self) -> Result<(), Error> {
+        if check_schema(&open_read(&self.path)?, &self.path)? == SCHEMA_VERSION {
+            return Ok(());
+        }
+        let _writer = lock_sidecar(&self.path, ".osv-sync-lock", true)?;
+        let connection =
+            Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let version = check_schema(&connection, &self.path)?;
+        incremental::migrate(&connection, version)
     }
 
     /// Look up a primary ID, then the connected alias group if it is absent.

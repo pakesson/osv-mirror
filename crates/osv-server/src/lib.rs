@@ -1,11 +1,13 @@
 //! OSV-compatible HTTP routes backed by a local SQLite store.
 
+mod query;
+
 use std::sync::Arc;
 
 use axum::extract::{Path, State, rejection::PathRejection};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use osv_api::RpcStatus;
 use osv_store::{Lookup, Store};
@@ -28,6 +30,8 @@ pub fn router(store: Store) -> Router {
         .route("/v1/vulns/{id}", get(get_vulnerability))
         .route("/v1/vulns", get(missing_id))
         .route("/v1/vulns/", get(missing_id))
+        .route("/v1/query", post(query::single))
+        .route("/v1/querybatch", post(query::batch))
         .with_state(state)
 }
 

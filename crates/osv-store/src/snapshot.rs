@@ -126,6 +126,7 @@ impl SnapshotWriter {
         if inserted {
             self.advisories += 1;
             insert_aliases(&self.connection, advisory)?;
+            crate::packages::replace_index(&self.connection, advisory)?;
         } else {
             let (existing_key, existing_json): (String, String) = self
                 .connection
@@ -148,6 +149,7 @@ impl SnapshotWriter {
                         .prepare_cached("DELETE FROM aliases WHERE advisory_id = ?1")?
                         .execute([&record.id])?;
                     insert_aliases(&self.connection, advisory)?;
+                    crate::packages::replace_index(&self.connection, advisory)?;
                 }
             }
         }
