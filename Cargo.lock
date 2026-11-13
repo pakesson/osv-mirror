@@ -1351,7 +1351,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
 
 [[package]]
-name = "osv"
+name = "osv-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "httpdate",
+ "osv-schema",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "osv-mirror"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -1367,21 +1382,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "osv-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64",
- "httpdate",
- "osv-schema",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
