@@ -94,8 +94,14 @@ pub(crate) async fn batch(
     result.unwrap_or_else(QueryError::response)
 }
 
+enum Selector {
+    Package(PackageQuery),
+    Commit { sha: String, repo: Option<String> },
+    Empty,
+}
+
 struct Parsed {
-    query: Option<PackageQuery>,
+    query: Selector,
     token: Option<String>,
 }
 
@@ -108,15 +114,38 @@ fn parse(query: Query) -> Result<Parsed, QueryError> {
                 "commit and version are mutually exclusive",
             ));
         }
-        if commit.is_empty()
-            || commit.len() % 2 != 0
-            || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
         {
-            return Err(QueryError::invalid("invalid hash"));
+            return Err(QueryError::invalid("expected a full Git commit hash"));
         }
-        return Err(QueryError::unsupported(
-            "commit queries require a local commit index",
-        ));
+        let repo = query
+            .package
+            .as_ref()
+            .filter(|package| package.ecosystem.as_deref() == Some("GIT"))
+            .map(|package| {
+                let name = package
+                    .name
+                    .as_deref()
+                    .filter(|name| name.len() <= 4096)
+                    .ok_or_else(|| {
+                        QueryError::invalid("Git commit scope requires a repository URL")
+                    })?;
+                if package.purl.is_some() {
+                    return Err(QueryError::invalid(
+                        "Git commit scope requires a repository URL",
+                    ));
+                }
+                osv_store::normalize_repository(name)
+                    .ok_or_else(|| QueryError::invalid("invalid Git repository URL"))
+            })
+            .transpose()?;
+        return Ok(Parsed {
+            query: Selector::Commit {
+                sha: commit.to_ascii_lowercase(),
+                repo,
+            },
+            token: query.page_token,
+        });
     }
 
     let package = query
@@ -152,7 +181,7 @@ fn parse(query: Query) -> Result<Parsed, QueryError> {
                 return Err(QueryError::invalid("invalid cursor"));
             }
             return Ok(Parsed {
-                query: None,
+                query: Selector::Empty,
                 token: query.page_token,
             });
         };
@@ -165,10 +194,10 @@ fn parse(query: Query) -> Result<Parsed, QueryError> {
     if !ecosystem.is_empty() && !osv_store::known_ecosystem(&ecosystem) {
         return Err(QueryError::invalid("invalid ecosystem"));
     }
-    if osv_store::base_ecosystem(&ecosystem) == "GIT" {
-        return Err(QueryError::unsupported(
-            "Git repository queries are not available yet",
-        ));
+    if osv_store::base_ecosystem(&ecosystem) == "GIT"
+        && (ecosystem != "GIT" || osv_store::normalize_repository(&name).is_none())
+    {
+        return Err(QueryError::invalid("invalid Git repository URL"));
     }
     if [&name, &ecosystem, &version]
         .iter()
@@ -177,7 +206,7 @@ fn parse(query: Query) -> Result<Parsed, QueryError> {
         return Err(QueryError::invalid("invalid query field"));
     }
     Ok(Parsed {
-        query: Some(PackageQuery::new(&name, &ecosystem, &version)),
+        query: Selector::Package(PackageQuery::new(&name, &ecosystem, &version)),
         token: query.page_token,
     })
 }
@@ -292,14 +321,18 @@ fn page(
     scan: usize,
     budget: Option<usize>,
 ) -> Result<QueryPage<osv_store::PackageMatch>, QueryError> {
-    let Some(query) = &parsed.query else {
-        return Ok(QueryPage {
-            vulns: Vec::new(),
-            next_page_token: None,
-        });
+    let identity = match &parsed.query {
+        Selector::Package(query) => query.identity(),
+        Selector::Commit { sha, repo } => [sha, "commit", repo.as_deref().unwrap_or_default()],
+        Selector::Empty => {
+            return Ok(QueryPage {
+                vulns: Vec::new(),
+                next_page_token: None,
+            });
+        }
     };
     let mut hash = Sha256::new();
-    for part in query.identity() {
+    for part in identity {
         hash.update((part.len() as u64).to_be_bytes());
         hash.update(part.as_bytes());
     }
@@ -318,7 +351,13 @@ fn page(
     } else {
         String::new()
     };
-    let page = search.page(query, &after, limit, scan, budget)?;
+    let page = match &parsed.query {
+        Selector::Package(query) => search.page(query, &after, limit, scan, budget)?,
+        Selector::Commit { sha, repo } => {
+            search.commit_page(sha, repo.as_deref(), &after, limit, budget)?
+        }
+        Selector::Empty => unreachable!("empty selector has no page"),
+    };
     let next_page_token = page.next_after.map(|after| {
         URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&Cursor {
@@ -361,6 +400,9 @@ impl From<osv_store::Error> for QueryError {
     fn from(error: osv_store::Error) -> Self {
         match error {
             osv_store::Error::UnsupportedMatch { .. } => Self::unsupported(error.to_string()),
+            osv_store::Error::GitUnavailable(_) => {
+                Self(StatusCode::SERVICE_UNAVAILABLE, 14, error.to_string())
+            }
             osv_store::Error::StalePage => Self::invalid("stale cursor; restart pagination"),
             osv_store::Error::ResponseTooLarge => {
                 Self(StatusCode::PAYLOAD_TOO_LARGE, 8, error.to_string())

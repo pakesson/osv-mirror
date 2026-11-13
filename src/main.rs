@@ -37,6 +37,15 @@ enum Command {
         #[arg(long, default_value = EXPORT_BASE_URL)]
         base_url: String,
     },
+    /// Build a local affected-commit index using a provisioned Git repository.
+    IndexGit {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        mirror: PathBuf,
+    },
     /// Serve advisory lookups and package queries from a local SQLite database.
     Serve {
         #[arg(long)]
@@ -77,6 +86,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "Skipped removal reconciliation: {missing} advisories absent, exceeding the limit of {limit}"
                 ),
             }
+        }
+        Command::IndexGit {
+            db,
+            repository,
+            mirror,
+        } => {
+            let report = tokio::task::spawn_blocking(move || {
+                Store::open(&db)?.index_git(&repository, &mirror)
+            })
+            .await??;
+            println!(
+                "Indexed {} commits and {} advisory matches from {} Git ranges",
+                report.commits, report.matches, report.ranges
+            );
         }
         Command::Serve { db, bind } => {
             tracing_subscriber::fmt()

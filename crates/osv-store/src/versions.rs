@@ -302,7 +302,7 @@ fn compare_boundaries(
     Some(order.then(a_kind.cmp(&b_kind)))
 }
 
-fn fuzzy_equal(a: &str, b: &str) -> bool {
+pub(crate) fn fuzzy_equal(a: &str, b: &str) -> bool {
     static SEPARATORS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[-_.]+").unwrap());
     static COMPONENTS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?i:[0-9]+|rc[0-9]*|alpha[0-9]*|beta[0-9]*|preview[0-9]*)").unwrap()

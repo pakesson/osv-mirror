@@ -60,7 +60,8 @@ struct Record<'a> {
 
 #[derive(Deserialize)]
 struct Affected<'a> {
-    package: Option<Package>,
+    #[serde(borrow)]
+    package: Option<&'a RawValue>,
     #[serde(borrow)]
     versions: Option<&'a RawValue>,
     #[serde(borrow)]
@@ -73,7 +74,12 @@ struct Package {
     name: String,
 }
 
-fn index_record(connection: &Connection, id: &str, json: &str) -> Result<(), Error> {
+fn index_record(
+    connection: &Connection,
+    id: &str,
+    json: &str,
+    packages: bool,
+) -> Result<(), Error> {
     let Ok(record) = serde_json::from_str::<Record<'_>>(json) else {
         return Ok(());
     };
@@ -82,10 +88,15 @@ fn index_record(connection: &Connection, id: &str, json: &str) -> Result<(), Err
          VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING",
     )?;
     for (ordinal, entry) in record.affected.into_iter().flatten().enumerate() {
-        let Ok(Affected {
-            package: Some(package),
-            ..
-        }) = serde_json::from_str(entry.get())
+        let Ok(affected) = serde_json::from_str::<Affected<'_>>(entry.get()) else {
+            continue;
+        };
+        let ordinal = ordinal as i64;
+        crate::git::index_ranges(connection, id, ordinal, affected.ranges)?;
+        let Some(package) = affected
+            .package
+            .filter(|_| packages)
+            .and_then(|raw| serde_json::from_str::<Package>(raw.get()).ok())
         else {
             continue;
         };
@@ -97,7 +108,6 @@ fn index_record(connection: &Connection, id: &str, json: &str) -> Result<(), Err
         }
         let name = normalize_name(&package.ecosystem, &package.name);
         let base = base_ecosystem(&package.ecosystem);
-        let ordinal = ordinal as i64;
         insert.execute(params![name, package.ecosystem, id, ordinal])?;
         if base != package.ecosystem {
             insert.execute(params![name, base, id, ordinal])?;
@@ -116,13 +126,16 @@ pub(crate) fn replace_index(connection: &Connection, advisory: &Advisory<'_>) ->
     connection
         .prepare_cached("DELETE FROM affected_packages WHERE advisory_id = ?1")?
         .execute([advisory.id()])?;
+    connection
+        .prepare_cached("DELETE FROM git_ranges WHERE advisory_id = ?1")?
+        .execute([advisory.id()])?;
     if advisory.withdrawn_key.is_none() {
-        index_record(connection, advisory.id(), advisory.json)?;
+        index_record(connection, advisory.id(), advisory.json, true)?;
     }
     Ok(())
 }
 
-pub(crate) fn backfill(connection: &Connection) -> Result<(), Error> {
+pub(crate) fn backfill(connection: &Connection, packages: bool) -> Result<(), Error> {
     let mut statement =
         connection.prepare("SELECT id, json FROM advisories WHERE withdrawn_key IS NULL")?;
     let mut rows = statement.query([])?;
@@ -131,6 +144,7 @@ pub(crate) fn backfill(connection: &Connection) -> Result<(), Error> {
             connection,
             &row.get::<_, String>(0)?,
             &row.get::<_, String>(1)?,
+            packages,
         )?;
     }
     Ok(())
@@ -146,7 +160,11 @@ pub struct PackageQuery {
 impl PackageQuery {
     pub fn new(name: &str, ecosystem: &str, version: &str) -> Self {
         Self {
-            name: normalize_name(ecosystem, name),
+            name: if ecosystem == "GIT" {
+                crate::normalize_repository(name).unwrap_or_default()
+            } else {
+                normalize_name(ecosystem, name)
+            },
             ecosystem: ecosystem.into(),
             version: version.into(),
         }
@@ -169,7 +187,7 @@ pub struct PackagePage {
 }
 
 pub struct PackageSearch<'a> {
-    transaction: Transaction<'a>,
+    pub(crate) transaction: Transaction<'a>,
     pub snapshot: String,
     pub revision: i64,
 }
@@ -207,13 +225,37 @@ impl PackageSearch<'_> {
         scan_limit: usize,
         json_budget: Option<usize>,
     ) -> Result<PackagePage, Error> {
+        let ids = if query.ecosystem == "GIT" {
+            crate::git::tag_candidates(&self.transaction, &query.name, after, scan_limit + 1)?
+        } else {
+            self.candidates(query, after, scan_limit + 1)?
+        };
+        self.hydrate_page(ids, after, limit, scan_limit, json_budget, |json, id| {
+            if query.version.is_empty() {
+                Ok(true)
+            } else if query.ecosystem == "GIT" {
+                crate::git::matches_tag(&self.transaction, id, &query.name, &query.version)
+            } else {
+                matches_record(json, id, query)
+            }
+        })
+    }
+
+    pub(crate) fn hydrate_page(
+        &self,
+        mut ids: Vec<String>,
+        after: &str,
+        limit: usize,
+        scan_limit: usize,
+        json_budget: Option<usize>,
+        matches: impl Fn(&str, &str) -> Result<bool, Error>,
+    ) -> Result<PackagePage, Error> {
         let mut output = PackagePage {
             matches: Vec::new(),
             next_after: None,
         };
         let mut last = after.to_owned();
         let mut remaining = json_budget.unwrap_or(usize::MAX);
-        let mut ids = self.candidates(query, after, scan_limit + 1)?;
         let has_more = ids.len() > scan_limit;
         ids.truncate(scan_limit);
 
@@ -227,7 +269,7 @@ impl PackageSearch<'_> {
             }
             let (json, modified_key): (String, String) =
                 get.query_row([&id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-            if !query.version.is_empty() && !matches_record(&json, &id, query)? {
+            if !matches(&json, &id)? {
                 last = id;
                 continue;
             }
@@ -301,7 +343,10 @@ fn matches_record(json: &str, id: &str, query: &PackageQuery) -> Result<bool, Er
         let Ok(affected) = serde_json::from_str::<Affected<'_>>(entry.get()) else {
             continue;
         };
-        let Some(package) = affected.package else {
+        let Some(package) = affected
+            .package
+            .and_then(|raw| serde_json::from_str::<Package>(raw.get()).ok())
+        else {
             continue;
         };
         if base_ecosystem(&package.ecosystem) == "GIT"

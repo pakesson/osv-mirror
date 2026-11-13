@@ -55,8 +55,11 @@ pub(crate) fn migrate(connection: &Connection, version: i32) -> Result<(), Error
     if version == 1 {
         transaction.execute_batch(include_str!("../migrations/002_sync.sql"))?;
     }
-    transaction.execute_batch(include_str!("../migrations/003_packages.sql"))?;
-    crate::packages::backfill(&transaction)?;
+    if version < 3 {
+        transaction.execute_batch(include_str!("../migrations/003_packages.sql"))?;
+    }
+    transaction.execute_batch(include_str!("../migrations/004_git.sql"))?;
+    crate::packages::backfill(&transaction, version < 3)?;
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(())
@@ -420,7 +423,7 @@ mod tests {
 
         let old = Connection::open(&path).unwrap();
         old.execute_batch(
-            "DROP TABLE affected_packages; DROP TABLE query_snapshot; DROP TABLE pending_absences; DROP TABLE sync_state; PRAGMA user_version = 1;",
+            "DROP TABLE git_matches; DROP TABLE git_commits; DROP TABLE git_coverage; DROP TABLE git_ranges; DROP TABLE affected_packages; DROP TABLE query_snapshot; DROP TABLE pending_absences; DROP TABLE sync_state; PRAGMA user_version = 1;",
         )
         .unwrap();
         drop(old);

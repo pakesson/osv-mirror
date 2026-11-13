@@ -1,5 +1,6 @@
 //! SQLite storage and snapshot publication for OSV advisories.
 
+mod git;
 mod incremental;
 mod packages;
 mod snapshot;
@@ -13,6 +14,7 @@ use osv_schema::{IndexMetadata, ValidationError};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use thiserror::Error;
 
+pub use git::{GitIndexReport, normalize_repository};
 pub use incremental::{Candidate, FeedState, Reconciliation, SyncReport, SyncWriter, Validators};
 pub use packages::{
     PackageMatch, PackagePage, PackageQuery, PackageSearch, base_ecosystem, known_ecosystem,
@@ -21,7 +23,7 @@ pub use snapshot::SnapshotWriter;
 
 // ASCII "OSV" followed by a zero byte.
 const APPLICATION_ID: i32 = 0x4f535600;
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -63,6 +65,10 @@ pub enum Error {
     StalePage,
     #[error("an advisory exceeds the query response size limit")]
     ResponseTooLarge,
+    #[error("Git coverage unavailable: {0}")]
+    GitUnavailable(String),
+    #[error("cannot index Git history: {0}")]
+    GitHistory(String),
 }
 
 /// An advisory validated for storage, retaining its original JSON.

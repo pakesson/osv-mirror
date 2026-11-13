@@ -239,11 +239,7 @@ async fn queries_match_packages_ranges_and_wire_contract() {
             StatusCode::NOT_IMPLEMENTED,
             12,
         ),
-        (
-            Query::for_commit("deadbeef"),
-            StatusCode::NOT_IMPLEMENTED,
-            12,
-        ),
+        (Query::for_commit("deadbeef"), StatusCode::BAD_REQUEST, 3),
         (versioned("pypi", "demo", "1"), StatusCode::BAD_REQUEST, 3),
         (
             Query {
